@@ -14,11 +14,6 @@ class NoType(Type):
         return "NoType"
 
 
-
-        
-        
-
-
 class Symbol:
     pass
 
@@ -40,7 +35,11 @@ class StaticChecker(BaseVisitor, Utils):
         self.nameVarDeclaring = None
         self.temp_list_ast = []
         self.prototypeFunction = []
+        self.contain_return = False
+        self.tmp_return_type = None
         self.canInfer = True
+        self.inLoop = []
+        self.current_funcName = None
         self.global_env = [[
             FuncSymbol("readNumber",[],NumberType()),
             FuncSymbol("writeNumber",[VarSymbol("",NumberType())],VoidType()),
@@ -327,5 +326,132 @@ class StaticChecker(BaseVisitor, Utils):
             else:
                 o[0] += [VarSymbol(ast.name.name, rightType)]
                 
-    def visitFuncDecl(self, ast:FuncDecl, o):
-        pass
+        self.nameVarDeclaring = None
+                
+    def visitFuncDecl(self, ast:FuncDecl, o):    
+    # name: Id
+    # param: List[VarDecl]  # empty list if there is no parameter
+    # body: Stmt = None  # None if this is just a declaration-part
+
+        
+        funcName = ast.name.name # name of function
+        self.current_funcName = funcName
+        
+        if ast.body is None: #only declare part
+            for decl in o[0]:
+                if type(decl) is FuncSymbol and decl.name == funcName:
+                    raise Redeclared(Function(), funcName)
+            
+            self.prototypeFunction += [funcName]
+
+            param = [] # store parameters of function
+            
+            for parameter in ast.param:
+                for para in param:
+                    if para.name == parameter.name.name:
+                        raise Redeclared(Parameter(),parameter.name.name)
+                param += [VarSymbol(parameter.name.name, parameter.varType,o)]
+            
+            o[0] += [FuncSymbol(funcName,param,None,None)]
+        else: # full function
+            exist = False
+            for decl in o[0]:
+                if type(decl) is FuncSymbol and decl.name == funcName:
+                    exist = True
+                    if decl.body is not None:
+                        raise Redeclared(Function(), funcName)
+                    
+                    if len(decl.param) != len(ast.param):
+                        raise Redeclared(Function(), funcName)
+                    
+                    else:
+                        for i in range(len(decl.param)):
+                            if decl.param[i].type is not ast.param[i].varType:
+                                raise Redeclared(Function(), funcName)
+                            
+                    idx = self.prototypeFunction.index(funcName)
+                    self.prototypeFunction.pop(idx)
+                    
+                    param = [] # store parameters of function
+            
+                    for parameter in ast.param:
+                        for para in param:
+                            if para.name == parameter.name.name:
+                                raise Redeclared(Parameter(),parameter.name.name)
+                        param += [VarSymbol(parameter.name.name, parameter.varType,o)]
+                    
+                    o = [param] + o
+                    self.visit(ast.body,o)
+                    if  not self.contain_return:
+                        decl.returnType = VoidType()
+                        decl.body = ast.body
+                    else:
+                        decl.returnType = self.tmp_return_type
+                        decl.body = ast.body
+                    self.contain_return = False
+                    self.tmp_return_type = None
+                    o = o[1:]
+                    break
+            
+            if not exist:
+                param = [] # store parameters of function
+            
+                for parameter in ast.param:
+                    for para in param:
+                        if para.name == parameter.name.name:
+                            raise Redeclared(Parameter(),parameter.name.name)
+                    param += [VarSymbol(parameter.name.name, parameter.varType,o)]
+                
+                o = [param] + o
+                self.visit(ast.body,o)
+                o = o[1:]
+                if  not self.contain_return:
+                    o[0]+= [FuncSymbol(funcName,param,VoidType())]
+                else:
+                    o[0]+= [FuncSymbol(funcName,param,self.tmp_return_type)]
+                self.contain_return = False
+                self.tmp_return_type = None
+                self.current_funcName = None
+                
+    def visitReturn(self, ast:Return, o):
+        if self.contain_return:
+            return
+        
+        self.contain_return = True
+        if ast.expr is None:
+            self.tmp_return_type = VoidType()
+        else:
+            rType = self.visit(ast.expr,o)
+            
+    def visitBreak(self, ast:Break, o):
+        if self.inLoop == []:
+            raise MustInLoop(ast)
+
+    def visitContinue(self, ast:Continue, o):
+            if self.inLoop == []:
+                raise MustInLoop(ast)
+            
+    def visitBlock(self, ast:Block,o):
+        o = [[]] + o
+        for stmt in ast.stmt:
+            self.visit(stmt,o)
+        
+        self.contain_return = False
+        o = o[1:]
+        
+            
+            
+                
+                
+                
+                
+                    
+                    
+                        
+
+                    
+                    
+                
+                
+            
+            
