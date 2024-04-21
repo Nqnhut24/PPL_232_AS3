@@ -38,8 +38,10 @@ class StaticChecker(BaseVisitor, Utils):
         self.contain_return = False
         self.tmp_return_type = None
         self.canInfer = True
+        self.tmp_return_list = []
         self.inLoop = []
         self.current_funcName = None
+        
         self.global_env = [[
             FuncSymbol("readNumber",[],NumberType()),
             FuncSymbol("writeNumber",[VarSymbol("",NumberType())],VoidType()),
@@ -418,10 +420,66 @@ class StaticChecker(BaseVisitor, Utils):
             return
         
         self.contain_return = True
-        if ast.expr is None:
-            self.tmp_return_type = VoidType()
-        else:
-            rType = self.visit(ast.expr,o)
+        
+        hasParent = False
+        for function in o[1]:
+            if type(function) is FuncSymbol and function.name == self.current_funcName: # find parent function of return statement
+                if ast.expr is None: # return not have statement
+                    self.tmp_return_type = VoidType()
+                    if type(function.returnType) is NoType:
+                        function.returnType = VoidType()
+                    else:
+                        raise TypeMismatchInStatement(ast)
+    
+                else: # return have expression
+                    rType = self.visit(ast.expr,o)    #type of expression
+                    if type(rType) is NoType():
+                        if type(function.returnType) is NoType():
+                            raise TypeCannotBeInferred(ast)
+                        else:
+                            self.tmp_return_type = function.returnType
+                            #infer to for expr of return
+                            if type(ast.expr) in [Id, CallExpr, ArrayLiteral]:
+                                self.infer(ast.expr,self.tmp_return_type,o)
+                                if not self.canInfer:
+                                    raise TypeCannotBeInferred(ast)
+                            else:
+                                TypeCannotBeInferred(ast)
+                        self.tmp_return_type = None
+                    else:
+                        
+                        if type(function.returnType) is NoType:
+                            function.returnType = rType
+                        else:
+                            if type(function.returnType) is not type(rType):
+                                raise TypeMismatchInStatement(ast)    
+                            else:
+                                if type(rType) is ArrayType:
+                                    if function.returnType.size[:len(rType.size)] != rType.size:
+                                        raise TypeMismatchInStatement(ast)
+                                    
+                                    if type(rType.eleType) is NoType:
+                                        if type (ast.expr) in [Id, CallExpr, ArrayLiteral]:
+                                            self.infer(ast.expr,function.returnType,o)
+                                            if not self.canInfer:
+                                                raise TypeCannotBeInferred(ast)
+                                            rType = function.returnType
+                                        else:
+                                            raise TypeCannotBeInferred(ast)
+                                    if type(function.returnType.eleType) is not type(rType.eleType) or function.returnType.size != rType.size:
+                                        raise TypeMismatchInStatement(ast)
+                                self.tmp_return_type = function.returnType
+
+                            
+                                     
+                hasParent = True
+                break
+
+        if not hasParent:
+            raise TypeMismatchInStatement(ast)
+        self.temp_list_ast = []
+                
+
             
     def visitBreak(self, ast:Break, o):
         if self.inLoop == []:
@@ -439,19 +497,241 @@ class StaticChecker(BaseVisitor, Utils):
         self.contain_return = False
         o = o[1:]
         
+        
+    def visitCallExpr(self, ast: CallExpr, o):
+        
+        if self.nameVarDeclaring is not None and self.nameVarDeclaring == ast.name.name:
+            raise TypeMismatchInExpression(ast)
+        
+        self.canInfer = True
+        
+        no_last = o[:-1]
+        
+        for sym in no_last:
+            for subSym in sym:
+                if type(subSym) is VarSymbol and subSym.name == ast.name.name:
+                    raise TypeMismatchInExpression(ast)
+        has_declared = False
+        for sym in o:
+            for subSym in sym:
+                if type(subSym) is FuncSymbol and subSym.name == ast.name.name:
+                    if len(ast.args) != len(subSym.param):
+                        raise TypeMismatchInExpression(ast)
+                    
+                    for i in range(len(ast.args)):
+                        argType = self.visit(ast.args[i],o)
+                        if type(argType) is NoType:
+                            if type(ast.args[i]) in [Id, CallExpr, ArrayLiteral]:
+                                self.infer(ast.args[i],subSym.param[i],o)
+                                if not self.canInfer:
+                                    return NoType()
+                            else:
+                                return NoType()
+                            
+                        if type(argType) is NoType:
+                            self.canInfer = False
+                            raise TypeMismatchInExpression(ast)
+                        
+                        if type(ast.args[i]) is not type (subSym.param[i]):
+                            raise TypeMismatchInExpression(ast)
+                        else:
+                            if type (ast.args[i]) is ArrayType:
+                                if ast.arg[i].size[:len(subSym.size)] != subSym.size:
+                                    raise TypeMismatchInExpression(ast)
+                                
+                                if type(ast.args[i].eleType) is NoType:
+                                    if type(ast.args[i]) in [Id, CallExpr, ArrayLiteral]:
+                                        self.infer(ast.args[i],subSym.eleType,o)
+                                        if not self.canInfer:
+                                            return NoType()
+                                        
+                                    
+                                    else:
+                                        return NoType()
+                                
+                                if len(ast.arg[i].size) != len(subSym.size) or ast.args[i].size != subSym.size:
+                                    raise TypeMismatchInExpression(ast)
+                                
+                        
+                                if type(subSym.returnType) is VoidType:
+                                    raise TypeMismatchInExpression(ast)
+                                
+                                return subSym.returnType
+                    
+                    has_declared = True
+                    break
+                
+            
+        
+        if not has_declared:
+            raise Undeclared(Function(),ast.name.name) 
+        
+    def visitCallStmt(self, ast: CallStmt, o):
+        
+        if self.nameVarDeclaring is not None and self.nameVarDeclaring == ast.name.name:
+            raise TypeMismatchInStatement(ast)
+        
+        self.canInfer = True
+        
+        no_last = o[:-1]
+        
+        for sym in no_last:
+            for subSym in sym:
+                if type(subSym) is VarSymbol and subSym.name == ast.name.name:
+                    raise TypeMismatchInStatement(ast)
+                
+        has_declared = False
+        for sym in o:
+            for subSym in sym:
+                if type(subSym) is FuncSymbol and subSym.name == ast.name.name:
+                    if len(ast.args) != len(subSym.param):
+                        raise TypeMismatchInStatement(ast)
+                    
+                    for i in range(len(ast.args)):
+                        argType = self.visit(ast.args[i],o)
+                        if type(argType) is NoType:
+                            if type(ast.args[i]) in [Id, CallExpr, ArrayLiteral]:
+                                self.infer(ast.args[i],subSym.param[i],o)
+                                if not self.canInfer:
+                                    return NoType()
+                            else:
+                                return NoType()
+                            
+                        if type(argType) is NoType:
+                            self.canInfer = False
+                            raise TypeMismatchInStatement(ast)
+                        
+                        if type(ast.args[i]) is not type (subSym.param[i]):
+                            raise TypeMismatchInStatement(ast)
+                        else:
+                            if type (ast.args[i]) is ArrayType:
+                                if ast.arg[i].size[:len(subSym.size)] != subSym.size:
+                                    raise TypeMismatchInStatement(ast)
+                                
+                                if type(ast.args[i].eleType) is NoType:
+                                    if type(ast.args[i]) in [Id, CallExpr, ArrayLiteral]:
+                                        self.infer(ast.args[i],subSym.eleType,o)
+                                        if not self.canInfer:
+                                            return NoType()
+                                    
+                                    else:
+                                        return NoType()
+                                
+                                if len(ast.arg[i].size) != len(subSym.size) or ast.args[i].size != subSym.size:
+                                    raise TypeMismatchInStatement(ast)
+                                
+                if type(subSym.returnType) is NoType:
+                    self.infer(ast,VoidType(),o)
+                                
+                has_declared = True
+                break
+                
+            
+        
+        if not has_declared:
+            raise Undeclared(Function(),ast.name.name)  
+          
+    def visitAssign(self, ast: Assign, o):
+        rType = self.visit(ast.exp,o)
+        lType = self.visit(ast.lhs,o)
+        if type(rType) is NoType and type(lType) is NoType:
+            raise TypeCannotBeInferred(ast)
+        
+        if type(lType) is NoType and type(rType) is not None:
+            if type(ast.lhs) is Id:
+                lType = self.infer(ast.lhs, rType,o)
+                
+            else:
+                raise TypeCannotBeInferred(ast)
+        
+        elif type(lType) is not None and type(rType) is None:
+            if type(ast.exp) in [Id, CallExpr, ArrayLiteral]:
+                self.infer(ast.exp,lType,o)
+                if not self.canInfer:
+                    raise TypeCannotBeInferred(ast)
+            else:
+                raise TypeCannotBeInferred(ast)
+            
+        else:
+            
+            if type(lType) is VoidType:
+                raise TypeMismatchInStatement(ast)
+            
+            if type(lType) is not type(rType):
+                raise TypeMismatchInStatement(ast)
+            
+            else:
+                if type(lType) is ArrayType:
+                    if lType.size[:len(rType.size)] != rType.size:
+                        raise TypeMismatchInStatement(ast)
+                    
+                    else:
+                        if type(rType.eleType) is NoType:
+                            if type(ast.exp) in [Id, CallExpr, ArrayLiteral]:
+                                self.infer(ast.exp,o)
+                                
+                                if not self.canInfer:
+                                    raise TypeCannotBeInferred(ast)
+
+                                rType = lType
+                            
+                            else:
+                                raise TypeCannotBeInferred(ast)
+                            
+                        
+                        if type(lType.eleType) is not type(rType.eleType) or lType.size != rType.size:
+                            raise TypeMismatchInStatement(ast)
+                        
+                    
+    def visitIf(self, ast: If, o):
+    # expr: Expr
+    # thenStmt: Stmt
+    # elifStmt: List[Tuple[Expr, Stmt]] # empty list if there is no elif statement
+    # elseStmt: Stmt = None  # None if there is no else branch
+        conType = self.visit(ast.expr,o)
+        if type(conType) is not BoolType:
+            raise TypeMismatchInStatement(ast)
+        
+        if type(conType) is NoType:
+            if type(ast.expr) in [Id, CallExpr, ArrayLiteral]:
+                self.infer(ast.expr, BoolType(),o)
+                if not self.canInfer:
+                    raise TypeCannotBeInferred(ast)
+                
+                conType = BoolType()
+            
+            else:
+                raise TypeCannotBeInferred(ast)
+        
+        
+        self.visit(self.thenStmt)
+        self.contain_return = False
+        for elifCon, elifStmt in ast.elifStmt:
+            condType = self.visit(elifCon,o)
+            if (condType) is None:
+                if type(elifCon) in [Id, CallExpr]:
+                    self.infer(elifCon,BoolType(),o):
+                    if not self.canInfer:
+                        raise TypeCannotBeInferred(ast)
+                    elifCon = BoolType()
+                else:
+                    raise TypeCannotBeInferred(ast)
             
             
-                
-                
-                
-                
+            if type(condType) is not BoolType:
+                raise TypeMismatchInStatement(ast)
+            
+            self.visit(elifStmt,o)
+            self.contain_return = False
+        
+        if ast.elifStmt:
+            self.visit(ast.elseStmt,o)
+            
+            
+    def visitFor(self, ast:For, o):
+        
+                    
                     
                     
                         
-
-                    
-                    
                 
-                
-            
-            
