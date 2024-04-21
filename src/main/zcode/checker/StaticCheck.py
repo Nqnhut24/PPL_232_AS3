@@ -39,6 +39,7 @@ class StaticChecker(BaseVisitor, Utils):
         self.tmp_return_type = None
         self.canInfer = True
         self.tmp_return_list = []
+        self.isCalling = False
         self.inLoop = []
         self.current_funcName = None
         
@@ -71,7 +72,7 @@ class StaticChecker(BaseVisitor, Utils):
                     self.canInfer = False
                 else:
                     for exp in expr.value:
-                        self.infer(exp, typ.eleType if len(typ.size) ==1 else ArrayType(typ.size[1:],typ.eleType),o)
+                        infer(exp, typ.eleType if len(typ.size) ==1 else ArrayType(typ.size[1:],typ.eleType),o)
             
                  
     
@@ -96,17 +97,25 @@ class StaticChecker(BaseVisitor, Utils):
 
     def visitNumberType(self, ast:NumberType,o):
         return NumberType() 
+    
+    
     # return type of Id ,if not have type return NoType()
     def visitId(self, ast:Id, o):
         if self.nameVarDeclaring is not None and ast.name == self.nameVarDeclaring:
             raise Undeclared(Identifier(),ast.name)
+        
+        self.canInfer = True
+        
         for sym in o:
             for subSym in sym:
                     if subSym.name == ast.name and type(subSym) is VarSymbol:
                         return subSym.typ
         raise Undeclared(Identifier(),ast.name)
     
+    
     def visitUnaryOp(self, ast:UnaryOp,o):
+    # op: str
+    # operand: Expr
         operandType = self.visit(ast.operand,o)
         if ast.op in ['-']:
             if type(operandType) is NoType:
@@ -177,8 +186,12 @@ class StaticChecker(BaseVisitor, Utils):
                 return StringType()
             raise TypeMismatchInExpression(ast)
     def visitArrayCell(self, ast: ArrayCell, o):
+    # arr: Expr
+    # idx: List[Expr]
+        self.canInfer = True
         nType = self.visit(ast.arr,o)
         if type (nType) is NoType:
+            self.canInfer = False
             return NoType()
         else:
             if type (nType) is not ArrayType:
@@ -191,18 +204,18 @@ class StaticChecker(BaseVisitor, Utils):
                         expType =  self.visit(exp,o)
                         if type(expType) is NoType:
                             if type(exp) in [Id, CallExpr]:
-                                if type(exp) is Id:
-                                    expType = self.infer(exp,NumberType(),o)
-                                else:
-                                    expType = self.infer(exp,NumberType(),o)
-                            return NoType()
+                                expType = self.infer(exp,NumberType(),o)
+                            else:                                
+                                return NoType()
                         if type(expType) is not NumberType:
                             raise TypeMismatchInExpression(ast)
+                        
                     if len (nType.size) == len(ast.idx):
                         return nType.eleType
                     return ArrayType(nType.size[len(ast.idx):] ,nType.eleType) 
                                     
     def visitArrayLiteral(self, ast:ArrayLiteral,o):
+        # value: List[Expr]
         if ast not in self.temp_list_ast:
             self.temp_list_ast += [ast]
         # find the first expr have type in [Expr]    
@@ -274,10 +287,16 @@ class StaticChecker(BaseVisitor, Utils):
             raise NoDefinition(self.prototypeFunction[0])
 
     def visitVarDecl(self,ast:VarDecl,o):
+        # name: Id
+        # varType: Type = None  # None if there is no type
+        # modifier: str = None  # None if there is no modifier
+        # varInit: Expr = None  # None if there is no initial
+        
+        
         #check redeclare
-        for sym in o[0]:
+        for sym in o[0]: 
             for subSym in sym:
-                if type(subSym) is VarSymbol and subSym.name is ast.name:
+                if type(subSym) is VarSymbol and subSym.name is ast.name.name:
                     raise Redeclared(Variable(),ast.name.name)
         
         self.nameVarDeclaring = ast.name.name
@@ -293,13 +312,15 @@ class StaticChecker(BaseVisitor, Utils):
                     self.infer(ast.varInit,leftType,o)
                     if self.canInfer:
                         rightType = leftType
+                        o[0] += [VarSymbol(ast.name.name,rightType)]
                     else:
                         return NoType()
                 else:
                     return NoType()
             
-            if type(rightType) is not type (leftType): # left and right difference type => Raise error            
+            if type(rightType) is not type(leftType): # left and right difference type => Raise error            
                 raise TypeMismatchInStatement(ast)
+            
             else: # same type
                 if type(rightType) is ArrayType:
                     if leftType.size[:len(rightType.size)] != rightType.size:
@@ -308,6 +329,7 @@ class StaticChecker(BaseVisitor, Utils):
                         if rightType.eleType is NoType:
                             self.infer(ast.varInit,leftType,o)
                             if not self.canInfer:
+                                self.canInfer = False
                                 raise TypeCannotBeInferred(ast)
                             o[0] += [VarSymbol(ast.name.name, leftType)]
                         else:
@@ -315,7 +337,7 @@ class StaticChecker(BaseVisitor, Utils):
                                 raise TypeMismatchInStatement(ast)
                 o[0] += [VarSymbol(ast.name.name,leftType)]
         elif ast.varInit is None and type(ast.varType) is NoType():
-                o[0] += [VarSymbol(ast.name.name, NoType())]
+                raise TypeCannotBeInferred(ast)
                 
         elif ast.varInit is None:
             if type(leftType) is NoType:
@@ -329,6 +351,7 @@ class StaticChecker(BaseVisitor, Utils):
                 o[0] += [VarSymbol(ast.name.name, rightType)]
                 
         self.nameVarDeclaring = None
+        self.temp_list_ast = []
                 
     def visitFuncDecl(self, ast:FuncDecl, o):    
     # name: Id
@@ -341,10 +364,10 @@ class StaticChecker(BaseVisitor, Utils):
         
         if ast.body is None: #only declare part
             for decl in o[0]:
-                if type(decl) is FuncSymbol and decl.name == funcName:
+                if type(decl) is FuncSymbol and decl.name == funcName and self.isCalling == False:
                     raise Redeclared(Function(), funcName)
-            
-            self.prototypeFunction += [funcName]
+            if not self.isCalling:
+                self.prototypeFunction += [funcName]
 
             param = [] # store parameters of function
             
@@ -635,7 +658,7 @@ class StaticChecker(BaseVisitor, Utils):
         rType = self.visit(ast.exp,o)
         lType = self.visit(ast.lhs,o)
         if type(rType) is NoType and type(lType) is NoType:
-            raise TypeCannotBeInferred(ast)
+            raise TypeCannotBeself.inferred(ast)
         
         if type(lType) is NoType and type(rType) is not None:
             if type(ast.lhs) is Id:
@@ -710,7 +733,7 @@ class StaticChecker(BaseVisitor, Utils):
             condType = self.visit(elifCon,o)
             if (condType) is None:
                 if type(elifCon) in [Id, CallExpr]:
-                    self.infer(elifCon,BoolType(),o):
+                    self.infer(elifCon,BoolType(),o)
                     if not self.canInfer:
                         raise TypeCannotBeInferred(ast)
                     elifCon = BoolType()
@@ -729,9 +752,44 @@ class StaticChecker(BaseVisitor, Utils):
             
             
     def visitFor(self, ast:For, o):
+    # name: Id
+    # condExpr: Expr
+    # updExpr: Expr
+    # body: Stmt
+        self.inLoop += ['l']
+        typeName = self.visit(ast.name,o)
+        if type(typeName) is NoType:
+            typeName = self.infer(ast.name, NumberType(),o)
+            
+        if type(typeName) is not NumberType:
+            raise TypeMismatchInStatement(ast)
         
-                    
-                    
-                    
-                        
-                
+        condType = self.visit(ast.condExpr,o)
+        if type(condType) is NoType:
+            if type(ast.condExpr) in [Id, CallExpr]:
+                self.infer(ast.condExpr,BoolType(),o)
+                if  not self.canInfer:
+                    raise TypeCannotBeInferred(ast)
+                condType = BoolType()
+            else:
+                raise TypeCannotBeInferred(ast)
+            
+        if type(condType) is not BoolType:
+            raise TypeMismatchInStatement(ast)
+        
+        updateType = self.visit(ast.updExpr,o)
+        if type(updateType) is NoType:
+            if type(ast.updExpr) in [Id, CallExpr]:
+                self.infer(ast.updExpr,NumberType(),o)
+                if not self.canInfer:
+                    raise TypeCannotBeInferred(ast)
+                updateType = NumberType()
+            raise TypeCannotBeInferred(ast)
+        
+        if type(updateType) is not NumberType:
+            raise TypeMismatchInStatement(ast)
+        
+        self.visit(ast.body,o)
+        self.temp_list_ast = []
+        self.inLoop = self.inLoop[:-1]
+        
